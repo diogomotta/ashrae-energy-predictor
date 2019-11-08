@@ -11,7 +11,7 @@ from sklearn.metrics import mean_squared_error
 import lightgbm as lgb
 import numpy as np
 
-def lgbm_model(X_train, y_train, X_val=None, y_val=None, nfolds=5):
+def lgbm_model(X_train, y_train, X_val=None, y_val=None):
     params = {
                 'boosting_type': 'gbdt',
                 'objective': 'regression',
