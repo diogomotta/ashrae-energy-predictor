@@ -72,7 +72,7 @@ def align_timestamp(df, offset):
     del df['offset'], df['timestamp_aligned']
     return df
 
-def preprocess_datetime(df, date_feat=['h', 'd', 'w', 'm']):
+def preprocess_datetime(df, date_feat=['h', 'd', 'w', 'm', 'wk']):
     # Incude datetime features from timestamp
     for feat in date_feat:
         if feat == 'h':
@@ -83,6 +83,8 @@ def preprocess_datetime(df, date_feat=['h', 'd', 'w', 'm']):
             df['weekday'] = df['timestamp'].dt.weekday
         elif feat == 'm':
             df['month'] = df['timestamp'].dt.month
+        elif feat == 'wk':
+            df['weekend'] = np.where((df['timestamp'].dt.weekday == 5) | (df['timestamp'].dt.weekday == 6), 1, 0)
     return df
 
 def replace_nan(df, cols, strategy, value=None, group=None):
