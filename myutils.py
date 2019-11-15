@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+import meteocalc
+import math
 
 ''' Kernels
 https://www.kaggle.com/corochann/ashrae-training-lgbm-by-meter-type
@@ -45,7 +47,22 @@ def reduce_mem_usage(df, verbose=True):
                 else:
                     df[col] = df[col].astype(np.float64)    
     end_mem = df.memory_usage().sum() / 1024**2
-    if verbose: print('Mem. usage decreased to {:5.2f} Mb ({:.1f}% reduction)'.format(end_mem, 100 * (start_mem - end_mem) / start_mem))
+    if verbose: 
+        print('Mem. usage decreased to {:5.2f} Mb ({:.1f}% reduction)'.format(end_mem, 100 * (start_mem - end_mem) / start_mem))
+    return df
+
+def convert_float16_to_float32(df, verbose=True):
+    numerics = ['float16']
+    start_mem = df.memory_usage().sum() / 1024**2    
+    for col in df.columns:
+        col_type = df[col].dtypes
+        if col_type in numerics:
+            c_min = df[col].min()
+            c_max = df[col].max()
+            df[col] = df[col].astype(np.float32)  
+    end_mem = df.memory_usage().sum() / 1024**2
+    if verbose: 
+        print('Mem. usage decreased to {:5.2f} Mb ({:.1f}% reduction)'.format(end_mem, 100 * (start_mem - end_mem) / start_mem))
     return df
 
 def calculate_time_offset(df_weather):
@@ -102,11 +119,13 @@ def replace_nan(df, cols, strategy, value=None, group=None):
 			val = value
 			df[col].fillna(val, inplace=True)
 		elif strategy == 'mean_group':
-			df[col] = df.groupby([group])[col].transform(lambda x: x.fillna(x.mean()))
+			df[col] = df.groupby(group)[col].transform(lambda x: x.fillna(x.mean()))
 		elif strategy == 'median_group':
-			df[col] = df.groupby([group])[col].transform(lambda x: x.fillna(x.median()))
+			df[col] = df.groupby(group)[col].transform(lambda x: x.fillna(x.median()))
 		elif strategy == 'mode_group':
-			df[col] = df.groupby([group])[col].apply(lambda x: x.fillna(x.mode()[0])) 
+			df[col] = df.groupby(group)[col].apply(lambda x: x.fillna(x.mode()[0])) 
+		elif strategy == 'interp':
+			df[col] = df[col].fillna(df[col].interpolate(method='polynomial', order=3))
 	return df
             
 def merge_dataframes(df, target_meter, weather_df):
@@ -128,3 +147,70 @@ def plot_dist_col(column, train, test=None):
     plt.xlabel(column, fontsize=16)
     plt.legend()
     plt.show()
+    
+def encode_cyclic_feature(df, col, max_vals):
+    df[col + '_sin'] = np.sin(2 * np.pi * df[col]/max_vals)
+    return df
+
+def calculate_feels_like_tempeature(weather_df):
+    weather_df['feels_like_temperature'] = 0
+    
+    # Heat index for high temperature and high humidity
+    hi_rows = weather_df.loc[(weather_df['air_temperature'] > 27) & (weather_df['relative_humidity'] > 40)].index
+    weather_df.loc[hi_rows, 'feels_like_temperature'] = calculate_heat_index(weather_df.iloc[hi_rows])
+    
+    # Wind chill for cold temperature and windy weather
+    wc_rows = weather_df.loc[(weather_df['air_temperature'] <= 10) & (weather_df['wind_speed'] > 1.34)].index
+    weather_df.loc[wc_rows, 'feels_like_temperature'] = calculate_wind_chill(weather_df.iloc[wc_rows])
+    
+    # Regular temperature otherwise
+    other_rows = weather_df.loc[weather_df['feels_like_temperature'] == 0].index
+    weather_df.loc[other_rows, 'feels_like_temperature'] = weather_df.loc[other_rows, 'air_temperature']
+    
+    return weather_df
+    
+def calculate_wind_chill(weather_df):
+    T = weather_df['air_temperature'] * (9/5) + 32
+    V = weather_df['wind_speed'] * (1609.34 / 3600)
+    wind_chill = 35.74 + (0.6215 * T) - 35.75 * V**0.16 + 0.4275 * T * V**0.16
+    
+    return ((wind_chill - 32) * (5/9))
+
+def calculate_heat_index(weather_df):
+    c1 = -42.379
+    c2 = 2.04901523
+    c3 = 10.14333127
+    c4 = -0.22475541
+    c5 = -6.83783e-3
+    c6 = -5.481717e-2
+    c7 = 1.22874e-3
+    c8 = 8.5282e-4
+    c9 = -1.99e-6
+
+    T = weather_df['air_temperature'] * (9/5) + 32
+    RH = weather_df['relative_humidity']
+
+    heat_index = (  c1 +
+                    c2 * T +
+                    c3 * RH +
+                    c4 * T * RH +
+                    c5 * (T**2) +
+                    c6 * (RH**2) +
+                    c7 * (T**2) * RH +
+                    c8 * T * (RH**2) +
+                    c9 * (T**2) * (RH**2)
+                    )
+
+    return ((heat_index - 32) * (5/9))
+
+def calculate_relative_humidity(weather_df):
+    T = weather_df['air_temperature']
+    TD = weather_df['dew_temperature']
+    b = 17.625
+    c = 243.04
+    
+    weather_df['relative_humidity'] = 100 * np.exp(TD * b / (TD + c) - b * T / (c + T))
+    weather_df['relative_humidity'].clip(lower=0, upper=100, inplace=True)
+    
+    return weather_df
+    

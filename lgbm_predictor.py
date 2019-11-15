@@ -6,36 +6,24 @@ Created on Sun Nov  3 13:34:36 2019
 @author: diogo
 """
 
-from sklearn.model_selection import GroupKFold
-from sklearn.metrics import mean_squared_error
 import lightgbm as lgb
 import numpy as np
 
-def lgbm_model(X_train, y_train, X_val=None, y_val=None):
-    params = {
-                'boosting_type': 'gbdt',
-                'objective': 'regression',
-                'metric': {'rmse'},
-                'subsample': 0.4,
-                'subsample_freq': 1,
-                'learning_rate': 0.25,
-                'num_leaves': 31,
-                'feature_fraction': 0.8,
-                'lambda_l1': 1,
-                'lambda_l2': 1
-                }
+def lgbm_model(X_train, y_train, X_val, y_val, params, cat_feats):
     
-    lgb_train = lgb.Dataset(X_train, y_train)
-    if X_val is not None and y_val is not None:
-        lgb_val = lgb.Dataset(X_val, y_val)
-        sets = (lgb_train, lgb_val)
-    else:
-        sets=(lgb_train)
-    model = lgb.train(params,
-                lgb_train,
-                num_boost_round=500,
-                valid_sets=sets,
-                early_stopping_rounds=100,
-                verbose_eval = 100)
+    model = lgb.LGBMRegressor(num_leaves=params['num_leaves'],
+                            learning_rate=params['learning_rate'],
+                            n_estimators=params['n_estimators'],
+                            reg_alpha=params['lambda_l1'],
+                            reg_lambda=params['lambda_l2'],
+                            subsample=params['subsample'],
+                            subsample_freq=params['subsample_freq'],
+                            colsample_bytree=params['feature_fraction'])
     
+    model.fit(X_train, y_train,
+            eval_set=[(X_val, y_val)],
+            eval_metric='rmse',
+            early_stopping_rounds=params['early_stopping_rounds'],
+            categorical_feature=cat_feats,
+            verbose=100)
     return model
