@@ -25,5 +25,5 @@ def lgbm_model(X_train, y_train, X_val, y_val, params, cat_feats):
             eval_metric='rmse',
             early_stopping_rounds=params['early_stopping_rounds'],
             categorical_feature=cat_feats,
-            verbose=100)
+            verbose=20)
     return model

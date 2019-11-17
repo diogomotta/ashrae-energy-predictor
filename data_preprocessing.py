@@ -17,6 +17,9 @@ import myutils
 
 dataset = 'test'
 
+encodeCyclic = False
+interpMissing = False
+
 print('Loading data...')
 if dataset == 'train':
     meter_data = pd.read_feather('./data/train.feather')
@@ -109,19 +112,35 @@ print('Done!')
 
 print('Adding new date time features...')
 all_data = myutils.preprocess_datetime(all_data, date_feat=['h', 'd', 'w', 'm', 'wk'])
-all_data = myutils.encode_cyclic_feature(all_data, 'weekday', 7)
-all_data = myutils.encode_cyclic_feature(all_data, 'hour', 24)
-all_data = myutils.encode_cyclic_feature(all_data, 'day', 31)
-all_data = myutils.encode_cyclic_feature(all_data, 'month', 12)
+if encodeCyclic:
+    all_data = myutils.encode_cyclic_feature(all_data, 'weekday', 7)
+    all_data = myutils.encode_cyclic_feature(all_data, 'hour', 24)
+    all_data = myutils.encode_cyclic_feature(all_data, 'day', 31)
+    all_data = myutils.encode_cyclic_feature(all_data, 'month', 12)
 
 all_data = myutils.reduce_mem_usage(all_data)
 print('Done!')
 
-print('Interpolating missing data...')
-# interpolate missing values using a cubic spline
-nan_cols = all_data.loc[:, all_data.isnull().any()].columns
-all_data = myutils.replace_nan(all_data, nan_cols, 'interp')
+print('Adding median reading for each building...')
+if dataset == 'test':
+    meter_train = pd.read_feather('./data/train.feather')
+    meter_train_group = meter_train.groupby('building_id')['meter_reading']
+    building_median = meter_train_group.median().astype(np.float16)
+    del meter_train, meter_train_group
+else:
+    all_data_group = all_data.groupby('building_id')['meter_reading']
+    building_median = all_data_group.median().astype(np.float16)
+    del all_data_group
+    
+all_data['building_median'] = all_data['building_id'].map(building_median)
 print('Done!')
+
+if interpMissing:
+    print('Interpolating missing data...')
+    # interpolate missing values using a cubic spline
+    nan_cols = all_data.loc[:, all_data.isnull().any()].columns
+    all_data = myutils.replace_nan(all_data, nan_cols, 'interp')
+    print('Done!')
 
 print('Aligning timestamps..')
 # Align timestamp offset

@@ -19,6 +19,7 @@ https://www.kaggle.com/caesarlupum/ashrae-start-here-a-gentle-introduction
 https://www.kaggle.com/kyakovlev/ashrae-cv-options
 https://www.kaggle.com/kyakovlev/ashrae-data-minification
 https://www.kaggle.com/kyakovlev/ashrae-baseline-lgbm
+https://www.kaggle.com/c/ashrae-energy-prediction/discussion/116773
 '''
 
 ## Function to reduce the memory usage
