@@ -7,7 +7,6 @@ Created on Sun Nov  3 13:34:36 2019
 """
 
 import lightgbm as lgb
-import numpy as np
 
 def lgbm_model(X_train, y_train, X_val, y_val, params, cat_feats):
     

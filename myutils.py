@@ -20,6 +20,7 @@ https://www.kaggle.com/kyakovlev/ashrae-cv-options
 https://www.kaggle.com/kyakovlev/ashrae-data-minification
 https://www.kaggle.com/kyakovlev/ashrae-baseline-lgbm
 https://www.kaggle.com/c/ashrae-energy-prediction/discussion/116773
+https://www.kaggle.com/rohanrao/ashrae-divide-and-conquer
 '''
 
 ## Function to reduce the memory usage
@@ -214,4 +215,28 @@ def calculate_relative_humidity(weather_df):
     weather_df['relative_humidity'].clip(lower=0, upper=100, inplace=True)
     
     return weather_df
+
+def create_lag_features(df, cols, window):
+    """
+    Creating lag-based features looking back in time.
+    """
+    
+    df_site = df.groupby("site_id")
+    
+    df_rolled = df_site[cols].rolling(window=window, min_periods=0)
+    
+    df_mean = df_rolled.mean().reset_index().astype(np.float16)
+    df_median = df_rolled.median().reset_index().astype(np.float16)
+    df_min = df_rolled.min().reset_index().astype(np.float16)
+    df_max = df_rolled.max().reset_index().astype(np.float16)
+    df_std = df_rolled.std().reset_index().astype(np.float16)
+    
+    for col in cols:
+        df['{:}_mean_lag{:d}'.format(col, window)] = df_mean[col]
+        df['{:}_median_lag{:d}'] = df_median[col]
+        df['{:}_min_lag{:d}'] = df_min[col]
+        df['{:}_max_lag{:d}'] = df_max[col]
+        df['{:}_std_lag{:d}'] = df_std[col]
+        
+    return df
     

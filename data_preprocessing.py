@@ -41,6 +41,10 @@ if dataset == 'train':
     print('Removing bad data from building 1099...')
     rows_idx = meter_data.loc[(meter_data['building_id'] == 1099) & (meter_data['meter'] == 2), :].index
     meter_data.loc[rows_idx, 'meter_reading'] = meter_data.loc[rows_idx, 'meter_reading'] / 1e3
+    
+    # Removing outliers in reading data
+    meter_data_group = meter_data.groupby(['building_id', 'meter'])['meter_reading']
+    meter_data['meter_reading'] = meter_data_group.apply(lambda x: x.clip(lower=0, upper=x.quantile(0.95)))
 
 print('Encoding building metadata and merging to meter data...')
 # Encoding building metadata
@@ -124,15 +128,15 @@ print('Done!')
 print('Adding median reading for each building...')
 if dataset == 'test':
     meter_train = pd.read_feather('./data/train.feather')
-    meter_train_group = meter_train.groupby('building_id')['meter_reading']
-    building_median = meter_train_group.median().astype(np.float16)
+    meter_train_group = meter_train.groupby(['building_id', 'meter'])['meter_reading']
+    building_median = np.log1p(meter_train_group.median()).astype(np.float16)
     del meter_train, meter_train_group
 else:
-    all_data_group = all_data.groupby('building_id')['meter_reading']
-    building_median = all_data_group.median().astype(np.float16)
+    all_data_group = all_data.groupby(['building_id', 'meter'])['meter_reading']
+    building_median = np.log1p(all_data_group.median()).astype(np.float16)
     del all_data_group
     
-all_data['building_median'] = all_data['building_id'].map(building_median)
+all_data['building_median'] = all_data[['building_id', 'meter']].merge(building_median, on=['building_id', 'meter'], how='left')['meter_reading']
 print('Done!')
 
 if interpMissing:

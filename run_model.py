@@ -24,7 +24,7 @@ plotImportance = True
 groupBuildId = False
 groupSemester = True
 
-subN = 6
+subN = 8
 train = pd.read_feather('./data/train_clean.feather')
 params = {
             'subsample': 0.8,
@@ -94,8 +94,8 @@ if groupSemester:
     train['semester'] = train['month'].replace({1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1,
                                                  7: 2, 8: 2, 9: 2, 10: 2, 11: 2, 12:2})
 
-    drop_cols = ['meter_reading', 'timestamp', 'date', 'square_feet', 'day', 'semester']
-    categorical = ['primary_use', 'weekday', 'month', 'weekend', 'hour']
+    drop_cols = ['meter_reading', 'timestamp', 'date', 'square_feet', 'day', 'semester', 'month', 'wind_direction', 'wind_speed', 'relative_humidity']
+    categorical = ['primary_use', 'weekday', 'weekend', 'hour']
     feat_cols = [col for col in list(train) if col not in drop_cols]
     X = train[feat_cols]
     y = np.log1p(train['meter_reading'])
@@ -107,9 +107,9 @@ if groupSemester:
         split_group = train[col]
         for fold_, (trn_idx, val_idx) in enumerate(folds.split(X, y, groups=split_group)):
             print('Training Months:')
-            print(np.unique(X.loc[trn_idx, 'month']))
+            print(np.unique(train.loc[trn_idx, 'month']))
             print('Validation Months:')
-            print(np.unique(X.loc[val_idx, 'month']))
+            print(np.unique(train.loc[val_idx, 'month']))
             model = lgbm_model(X.iloc[trn_idx, :], y[trn_idx],
                                X.iloc[val_idx, :], y[val_idx],
                                params,
