@@ -19,32 +19,112 @@ dataset = 'test'
 
 encodeCyclic = False
 interpMissing = False
+removeOutliers = True
+
+# Leaked data
+useSite0 = True
+useSite1 = False
+useSite2 = False
+useSite4 = False
 
 print('Loading data...')
 if dataset == 'train':
-    meter_data = pd.read_feather('./data/train.feather')
+    meter_train = pd.read_feather('./data/train.feather')
 elif dataset == 'test':
     meter_data = pd.read_feather('./data/test.feather')
+    meter_train = pd.read_feather('./data/train.feather')
 building = pd.read_feather('./data/building_metadata.feather')
 weather_train = pd.read_feather('./data/weather_train.feather')
 weather_test = pd.read_feather('./data/weather_test.feather')
 print('Done!')
 
-if dataset == 'train':
-    # Removing bad data in Site 0
-    # https://www.kaggle.com/c/ashrae-energy-prediction/discussion/113054#656588
-    print('Removing bad data from site 0...')
-    meter_data = meter_data.loc[(meter_data['building_id'] > 104) | (meter_data['timestamp'] > '2016-05-20'), :]
+if useSite0:
+    print('Loading site_0 leaked data...')
+    site_0 = pd.read_feather('./data/data_leak_site0.feather')
+    site_0['meter_reading'] = site_0['meter_reading_scraped']
+    site_0.drop(['meter_reading_original','meter_reading_scraped'], axis=1, inplace=True)
+    site_0.fillna(0, inplace=True)
+    site_0.loc[site_0['meter_reading'] < 0, 'meter_reading'] = 0
+    site_0 = site_0[(site_0['timestamp'].dt.year == 2016)]
+    
+    print('Replacing original data with leaked data...')
+    meter_train = myutils.replace_with_leaked(meter_train, site_0)
     print('Done!')
+    del site_0
+
+if useSite1:
+    print('Loading site_1 leaked data...')
+    site_1 = np.load('./data/data_leak_site1.pkl', allow_pickle=True)
+    site_1['meter_reading'] = site_1['meter_reading_scraped']
+    site_1.drop(['meter_reading_scraped'], axis=1, inplace=True)
+    site_1.fillna(0, inplace=True)
+    site_1.loc[site_1['meter_reading'] < 0, 'meter_reading'] = 0
+    site_1 = site_1[(site_1['timestamp'].dt.year == 2016)]
     
-    # Removing bad data in building 1099 on meter 2 (steam)
-    print('Removing bad data from building 1099...')
-    rows_idx = meter_data.loc[(meter_data['building_id'] == 1099) & (meter_data['meter'] == 2), :].index
-    meter_data.loc[rows_idx, 'meter_reading'] = meter_data.loc[rows_idx, 'meter_reading'] / 1e3
+    print('Replacing original data with leaked data...')
+    meter_train = myutils.replace_with_leaked(meter_train, site_1)
+    print('Done!')
+    del site_1
     
+if useSite2:
+    print('Loading site_2 leaked data...')
+    site_2 = pd.read_feather('./data/data_leak_site2.feather')
+    site_2.fillna(0, inplace=True)
+    site_2.loc[site_2['meter_reading'] < 0, 'meter_reading'] = 0
+    site_2 = site_2[(site_2['timestamp'].dt.year == 2016)]
+    
+    print('Replacing original data with leaked data...')
+    meter_train = myutils.replace_with_leaked(meter_train, site_2)
+    print('Done!')
+    del site_2
+    
+if useSite4:
+    print('Loading site_4 leaked data...')
+    site_4 = pd.read_feather('./data/data_leak_site4.feather')
+    site_4.fillna(0, inplace=True)
+    site_4.loc[site_4['meter_reading'] < 0, 'meter_reading'] = 0
+    site_4 = site_4[(site_4['timestamp'].dt.year == 2016)]
+    
+    print('Replacing original data with leaked data...')
+    meter_train = myutils.replace_with_leaked(meter_train, site_4)
+    print('Done!')
+    del site_4
+gc.collect()
+
+# Removing bad data in Site 0
+# https://www.kaggle.com/c/ashrae-energy-prediction/discussion/113054#656588
+print('Removing bad data from site 0...')
+meter_train = meter_train.loc[(meter_train['building_id'] > 104) | (meter_train['timestamp'] > '2016-05-20'), :]
+print('Done!')
+
+# Removing bad data in building 1099 on meter 2 (steam)
+print('Removing bad data from building 1099...')
+rows_idx = meter_train.loc[(meter_train['building_id'] == 1099) & (meter_train['meter'] == 2), :].index
+meter_train.loc[rows_idx, 'meter_reading'] = meter_train.loc[rows_idx, 'meter_reading'] / 1e3
+print('Done!')
+
+if removeOutliers:
     # Removing outliers in reading data
-    meter_data_group = meter_data.groupby(['building_id', 'meter'])['meter_reading']
-    meter_data['meter_reading'] = meter_data_group.apply(lambda x: x.clip(lower=0, upper=x.quantile(0.95)))
+    print('Clipping outliers above 99% quantile')
+    meter_train_group = meter_train.groupby(['building_id', 'meter'])['meter_reading']
+    meter_train['meter_reading'] = meter_train_group.apply(lambda x: x.clip(lower=0, upper=x.quantile(0.99)))
+    print('Done!')
+    del meter_train_group
+
+if dataset == 'train':
+    meter_data = meter_train
+    del meter_train
+    
+print('Calculating median reading for each building...')
+if dataset == 'test':
+    meter_train_group = meter_train.groupby(['building_id', 'meter'])['meter_reading']
+    del meter_train
+else:
+    meter_train_group = meter_data.groupby(['building_id', 'meter'])['meter_reading']
+
+building_median = np.log1p(meter_train_group.median()).astype(np.float32)
+del meter_train_group
+print('Done!')
 
 print('Encoding building metadata and merging to meter data...')
 # Encoding building metadata
@@ -81,6 +161,9 @@ if dataset == 'train':
 elif dataset == 'test':
     weather = weather_test
     del weather_test
+
+# Find missing dates
+weather = myutils.find_missing_dates(weather)
 
 # Replace NaNs with interpolation
 nan_cols = ['air_temperature', 'cloud_coverage', 'dew_temperature', 'precip_depth_1_hr',
@@ -125,17 +208,7 @@ if encodeCyclic:
 all_data = myutils.reduce_mem_usage(all_data)
 print('Done!')
 
-print('Adding median reading for each building...')
-if dataset == 'test':
-    meter_train = pd.read_feather('./data/train.feather')
-    meter_train_group = meter_train.groupby(['building_id', 'meter'])['meter_reading']
-    building_median = np.log1p(meter_train_group.median()).astype(np.float16)
-    del meter_train, meter_train_group
-else:
-    all_data_group = all_data.groupby(['building_id', 'meter'])['meter_reading']
-    building_median = np.log1p(all_data_group.median()).astype(np.float16)
-    del all_data_group
-    
+print('Adding median building reading per meter...')
 all_data['building_median'] = all_data[['building_id', 'meter']].merge(building_median, on=['building_id', 'meter'], how='left')['meter_reading']
 print('Done!')
 

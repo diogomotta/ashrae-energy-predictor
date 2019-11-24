@@ -10,6 +10,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import train_test_split, GroupShuffleSplit, GroupKFold
+from sklearn.metrics import mean_squared_error
 import pickle
 import gc
 
@@ -21,20 +22,26 @@ from lgbm_predictor import lgbm_model
 doPred = False
 splitOOF = False
 plotImportance = True
-groupBuildId = False
-groupSemester = True
+groupBuildId = True
+groupSemester = False
 
-subN = 8
+# Data leakage control
+useSite0 = True
+useSite1 = True
+useSite2 = True
+useSite4 = True
+
+subN = 12
 train = pd.read_feather('./data/train_clean.feather')
 params = {
             'subsample': 0.8,
             'subsample_freq': 1,
-            'learning_rate': 0.07,
-            'num_leaves': 63,
+            'learning_rate': 0.05,
+            'num_leaves': 255,
             'feature_fraction': 0.8,
             'lambda_l1': 0.1,
             'lambda_l2': 0,
-            'n_estimators': 1000,
+            'n_estimators': 2500,
             'early_stopping_rounds': 100
             }
 
@@ -55,7 +62,7 @@ if groupBuildId:
     print('{:d}-fold group cross validation splitting data by building_id.'.format(NSPLITS))
     
     # Preparing data
-    drop_cols = ['meter_reading', 'timestamp', 'date', 'square_feet', 'day', 'building_id', 'site_id']
+    drop_cols = ['meter_reading', 'timestamp', 'date', 'square_feet', 'day', 'building_id']
     categorical = ['primary_use', 'weekday', 'month', 'weekend', 'hour']
     feat_cols = [col for col in list(train) if col not in drop_cols]
     X = train[feat_cols]
@@ -94,7 +101,7 @@ if groupSemester:
     train['semester'] = train['month'].replace({1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1,
                                                  7: 2, 8: 2, 9: 2, 10: 2, 11: 2, 12:2})
 
-    drop_cols = ['meter_reading', 'timestamp', 'date', 'square_feet', 'day', 'semester', 'month', 'wind_direction', 'wind_speed', 'relative_humidity']
+    drop_cols = ['meter_reading', 'timestamp', 'date', 'square_feet', 'day', 'semester', 'month']
     categorical = ['primary_use', 'weekday', 'weekend', 'hour']
     feat_cols = [col for col in list(train) if col not in drop_cols]
     X = train[feat_cols]
@@ -145,7 +152,6 @@ if doPred:
     sub = pd.read_csv('./data/sample_submission.csv')
     test = pd.read_feather('./data/test_clean.feather')
     test = myutils.reduce_mem_usage(test)
-    test = test[feat_cols]
     batch_size = 500000
     predictions = list()
     for i, model in enumerate(models_dict['models']):
@@ -158,4 +164,96 @@ if doPred:
         
     sub['meter_reading'] = sub['meter_reading'] / len(models_dict['models'])
     sub['meter_reading'] = np.clip(sub['meter_reading'].values, a_min=0, a_max=None)
+    
+    if useSite0:
+        print('Inserting site_0 data...')
+        site_0 = pd.read_feather('./data/data_leak_site0.feather')
+        site_0['meter_reading'] = site_0['meter_reading_scraped']
+        site_0.drop(['meter_reading_original','meter_reading_scraped'], axis=1, inplace=True)
+        site_0.fillna(0, inplace=True)
+        site_0 = site_0.loc[(site_0['timestamp'].dt.year > 2016) &
+                            (site_0['timestamp'].dt.year < 2019), :]
+        site_0.loc[site_0['meter_reading'] < 0, 'meter_reading'] = 0 # remove large negative values
+        site_0.dropna(inplace=True)
+        
+        leak_score = 0
+        for bid in site_0['building_id'].unique():
+            temp_df = site_0.loc[(site_0['building_id']==bid), ['meter', 'meter_reading']]
+            for m in temp_df['meter'].unique():
+                v0 = sub.loc[(test['building_id']==bid) & (test['meter']==m), 'meter_reading'].values
+                v1 = temp_df.loc[temp_df['meter']==m, 'meter_reading'].values
+                leak_score += mean_squared_error(np.log1p(v0), np.log1p(v1)) * len(v0)
+                
+                sub.loc[(test['building_id']==bid) & (test['meter']==m), 'meter_reading'] = temp_df.loc[temp_df['meter']==m, 'meter_reading'].values
+        del site_0
+        print('Done!')
+          
+    if useSite1:
+        print('Inserting site_1 data...')
+        site_1 = np.load('./data/data_leak_site1.pkl', allow_pickle=True)
+        site_1['meter_reading'] = site_1['meter_reading_scraped']
+        site_1.drop(['meter_reading_scraped'], axis=1, inplace=True)
+        site_1.fillna(0, inplace=True)
+        site_1 = site_1.loc[(site_1['timestamp'].dt.year > 2016) &
+                            (site_1['timestamp'].dt.year < 2019), :]
+        site_1.loc[site_1['meter_reading'] < 0, 'meter_reading'] = 0 # remove large negative values
+        site_1.dropna(inplace=True)
+        
+        leak_score = 0
+        for bid in site_1['building_id'].unique():
+            temp_df = site_1.loc[(site_1['building_id']==bid), ['meter', 'meter_reading']]
+            for m in temp_df['meter'].unique():
+                v0 = sub.loc[(test['building_id']==bid) & (test['meter']==m), 'meter_reading'].values
+                v1 = temp_df.loc[temp_df['meter']==m, 'meter_reading'].values
+                leak_score += mean_squared_error(np.log1p(v0), np.log1p(v1)) * len(v0)
+                
+                sub.loc[(test['building_id']==bid) & (test['meter']==m), 'meter_reading'] = temp_df.loc[temp_df['meter']==m, 'meter_reading'].values
+        del site_1
+        print('Done!')
+        
+    if useSite2:
+        print('Inserting site_2 data...')
+        site_2 = pd.read_feather('./data/data_leak_site2.feather')
+        site_2.fillna(0, inplace=True)
+        site_2 = site_2.loc[(site_2['timestamp'].dt.year > 2016) &
+                            (site_2['timestamp'].dt.year < 2019), :]
+        site_2.loc[site_2['meter_reading'] < 0, 'meter_reading'] = 0 # remove large negative values
+        site_2.dropna(inplace=True)
+        
+        leak_score = 0
+        for bid in site_2['building_id'].unique():
+            temp_df = site_2.loc[(site_2['building_id']==bid), ['meter', 'meter_reading']]
+            for m in temp_df['meter'].unique():
+                v0 = sub.loc[(test['building_id']==bid) & (test['meter']==m), 'meter_reading'].values
+                v1 = temp_df.loc[temp_df['meter']==m, 'meter_reading'].values
+                leak_score += mean_squared_error(np.log1p(v0), np.log1p(v1)) * len(v0)
+                
+                sub.loc[(test['building_id']==bid) & (test['meter']==m), 'meter_reading'] = temp_df.loc[temp_df['meter']==m, 'meter_reading'].values
+        del site_2
+        print('Done!')
+        
+    if useSite4:
+        print('Inserting site_4 data...')
+        site_4 = pd.read_feather('./data/data_leak_site4.feather')
+        site_4.fillna(0, inplace=True)
+        site_4 = site_4.loc[(site_4['timestamp'].dt.year > 2016) &
+                            (site_4['timestamp'].dt.year < 2019), :]
+        site_4.loc[site_4['meter_reading'] < 0, 'meter_reading'] = 0 # remove large negative values
+        site_4.dropna(inplace=True)
+        
+        leak_score = 0
+        for bid in site_4['building_id'].unique():
+            temp_df = site_4.loc[(site_4['building_id']==bid), ['meter', 'meter_reading']]
+            for m in temp_df['meter'].unique():
+                v0 = sub.loc[(test['building_id']==bid) & (test['meter']==m), 'meter_reading'].values
+                v1 = temp_df.loc[temp_df['meter']==m, 'meter_reading'].values
+#                leak_score += mean_squared_error(np.log1p(v0), np.log1p(v1)) * len(v0)
+                
+                sub.loc[(test['building_id']==bid) &
+                        (test['meter']==m), 'meter_reading'] = temp_df.loc[temp_df['meter']==m, 'meter_reading'].values
+        del site_4
+        print('Done!')
+ 
+        gc.collect()
+        
     sub.to_csv('submission_{:d}.csv'.format(subN), index=False)

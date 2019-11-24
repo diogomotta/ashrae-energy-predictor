@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-import meteocalc
-import math
+import datetime
+from sklearn.metrics import mean_squared_error
 
 ''' Kernels
 https://www.kaggle.com/corochann/ashrae-training-lgbm-by-meter-type
@@ -239,4 +239,32 @@ def create_lag_features(df, cols, window):
         df['{:}_std_lag{:d}'] = df_std[col]
         
     return df
+
+def find_missing_dates(weather_df):
     
+    # Find Missing Dates
+    time_format = "%Y-%m-%d %H:%M:%S"
+    start_date = weather_df['timestamp'].min()
+    end_date = weather_df['timestamp'].max()
+    total_hours = int(((end_date - start_date).total_seconds() + 3600) / 3600)
+    hours_list = np.asarray([(end_date - datetime.timedelta(hours=x)).strftime(time_format) for x in range(total_hours)], dtype='datetime64')
+
+    for site_id in weather_df['site_id'].unique():
+        site_hours = np.array(weather_df[weather_df['site_id'] == site_id]['timestamp'])
+        new_rows = pd.DataFrame(np.setdiff1d(hours_list,site_hours),  columns=['timestamp'])
+        new_rows['site_id'] = site_id
+        print('Adding {:d} new rows to site_id {:d}'.format(len(new_rows), site_id))
+        weather_df = pd.concat([weather_df, new_rows], sort=True)
+
+        weather_df = weather_df.reset_index(drop=True)           
+        
+    return weather_df
+
+def replace_with_leaked(original, leaked):
+    t = original[['building_id', 'meter', 'timestamp']]
+    t['row_id'] = t.index
+    leaked = leaked.merge(t, left_on = ['building_id', 'meter', 'timestamp'], right_on = ['building_id', 'meter', 'timestamp'], how = "left")
+    leaked = leaked[['meter_reading', 'row_id']].set_index('row_id').dropna()
+    original.loc[leaked.index, 'meter_reading'] = leaked['meter_reading']
+    
+    return original
