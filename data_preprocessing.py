@@ -17,9 +17,12 @@ import myutils
 
 dataset = 'test'
 
+calcOffset = False
+alignTimestamps = True
 encodeCyclic = False
 interpMissing = False
 removeOutliers = True
+addLag = False
 
 # Leaked data
 useSite0 = True
@@ -37,59 +40,6 @@ building = pd.read_feather('./data/building_metadata.feather')
 weather_train = pd.read_feather('./data/weather_train.feather')
 weather_test = pd.read_feather('./data/weather_test.feather')
 print('Done!')
-
-if useSite0:
-    print('Loading site_0 leaked data...')
-    site_0 = pd.read_feather('./data/data_leak_site0.feather')
-    site_0['meter_reading'] = site_0['meter_reading_scraped']
-    site_0.drop(['meter_reading_original','meter_reading_scraped'], axis=1, inplace=True)
-    site_0.fillna(0, inplace=True)
-    site_0.loc[site_0['meter_reading'] < 0, 'meter_reading'] = 0
-    site_0 = site_0[(site_0['timestamp'].dt.year == 2016)]
-    
-    print('Replacing original data with leaked data...')
-    meter_train = myutils.replace_with_leaked(meter_train, site_0)
-    print('Done!')
-    del site_0
-
-if useSite1:
-    print('Loading site_1 leaked data...')
-    site_1 = np.load('./data/data_leak_site1.pkl', allow_pickle=True)
-    site_1['meter_reading'] = site_1['meter_reading_scraped']
-    site_1.drop(['meter_reading_scraped'], axis=1, inplace=True)
-    site_1.fillna(0, inplace=True)
-    site_1.loc[site_1['meter_reading'] < 0, 'meter_reading'] = 0
-    site_1 = site_1[(site_1['timestamp'].dt.year == 2016)]
-    
-    print('Replacing original data with leaked data...')
-    meter_train = myutils.replace_with_leaked(meter_train, site_1)
-    print('Done!')
-    del site_1
-    
-if useSite2:
-    print('Loading site_2 leaked data...')
-    site_2 = pd.read_feather('./data/data_leak_site2.feather')
-    site_2.fillna(0, inplace=True)
-    site_2.loc[site_2['meter_reading'] < 0, 'meter_reading'] = 0
-    site_2 = site_2[(site_2['timestamp'].dt.year == 2016)]
-    
-    print('Replacing original data with leaked data...')
-    meter_train = myutils.replace_with_leaked(meter_train, site_2)
-    print('Done!')
-    del site_2
-    
-if useSite4:
-    print('Loading site_4 leaked data...')
-    site_4 = pd.read_feather('./data/data_leak_site4.feather')
-    site_4.fillna(0, inplace=True)
-    site_4.loc[site_4['meter_reading'] < 0, 'meter_reading'] = 0
-    site_4 = site_4[(site_4['timestamp'].dt.year == 2016)]
-    
-    print('Replacing original data with leaked data...')
-    meter_train = myutils.replace_with_leaked(meter_train, site_4)
-    print('Done!')
-    del site_4
-gc.collect()
 
 # Removing bad data in Site 0
 # https://www.kaggle.com/c/ashrae-energy-prediction/discussion/113054#656588
@@ -133,7 +83,6 @@ label = LabelEncoder()
 building['primary_use'] = label.fit_transform(building['primary_use']).astype('uint8')
 # Replacing NaNs
 building['floor_count'] = building['floor_count'].fillna(0).astype('uint8')
-building['year_built'] = building['year_built'].fillna(-999).astype('uint8')
 # Including ln of square feet area of the building
 building['log_square_feet'] = np.log(building['square_feet']).astype('float32')
 
@@ -142,19 +91,22 @@ meter_data = meter_data.merge(building, on='building_id', how='left')
 del building
 print('Done!')
 
-print('Calculating timestamp correcting offset...')
-# Find timestamps alignment offset
-weather = pd.concat([weather_train, weather_test],ignore_index=True)
-offset = myutils.calculate_time_offset(weather)
-if dataset == 'train':
-    del weather, weather_test
-elif dataset == 'test':
-    del weather, weather_train
-gc.collect()
-print('Done!')
-
-print('Adding new features to weather dataframe')
-# Add some new weather features
+if calcOffset:
+    print('Calculating timestamp correcting offset...')
+    # Find timestamps alignment offset
+    weather = pd.concat([weather_train, weather_test],ignore_index=True)
+    offset = myutils.calculate_time_offset(weather)
+    if dataset == 'train':
+        del weather, weather_test
+    elif dataset == 'test':
+        del weather, weather_train
+    gc.collect()
+    print('Done!')
+else:
+    site_GMT_offsets = [5, 0, 7, 5, 8, 0, 5, 5, 5, 6, 7, 5, 0, 6, 5, 5]
+    offset = pd.Series(site_GMT_offsets)
+    offset.index.name = 'site_id'
+    
 if dataset == 'train':
     weather = weather_train
     del weather_train
@@ -162,6 +114,20 @@ elif dataset == 'test':
     weather = weather_test
     del weather_test
 
+if alignTimestamps:
+    print('Aligning weather timestamps..')
+    # Align timestamp offset
+    ## Using actual timezones from leaked data
+    #timezones = ['US/Eastern', 'Europe/London', 'US/Mountain', 'US/Pacific']
+    #site_ids_leak = [0, 1, 2, 4]
+    #for sid, tz in zip(site_ids_leak, timezones):
+    #    all_data = myutils.align_timestamp(all_data, 0, strategy='timezone', site_id=sid, tz=tz)
+    
+    # Using 14h calculation
+    weather = myutils.align_timestamp(weather, offset, strategy='14h_calc')
+    print('Done!')
+
+print('Adding new features to weather dataframe')
 # Find missing dates
 weather = myutils.find_missing_dates(weather)
 
@@ -177,9 +143,18 @@ nan_cols = weather.loc[:, weather.isnull().any()].columns
 weather['date'] = weather['timestamp'].dt.date
 weather = myutils.replace_nan(weather, nan_cols, 'mean_group', group=['site_id', 'date'])
 
+# Replace remaining NaNs with daily mean value
+nan_cols = weather.loc[:, weather.isnull().any()].columns
+
+weather = myutils.replace_nan(weather, nan_cols, 'median')
+
 # Add relative humidity and feels like temperature
 weather = myutils.calculate_relative_humidity(weather)
 weather = myutils.calculate_feels_like_tempeature(weather)
+if addLag:
+    lag_cols = ['air_temperature', 'cloud_coverage', 'dew_temperature', 'precip_depth_1_hr',
+                'sea_level_pressure', 'wind_direction', 'wind_speed']
+    weather = myutils.create_lag_features(weather, lag_cols, 'site_id', 72, 'mean')
 print('Done!')
 
 print('Saving data to feather...')
@@ -204,8 +179,10 @@ if encodeCyclic:
     all_data = myutils.encode_cyclic_feature(all_data, 'hour', 24)
     all_data = myutils.encode_cyclic_feature(all_data, 'day', 31)
     all_data = myutils.encode_cyclic_feature(all_data, 'month', 12)
-
 all_data = myutils.reduce_mem_usage(all_data)
+all_data['age'] = all_data['timestamp'].dt.year - all_data['year_built']
+all_data['age'] = all_data['age'].fillna(-99).astype(np.int16)
+all_data['year_built'] = all_data['year_built'].fillna(-99).astype(np.int16)
 print('Done!')
 
 print('Adding median building reading per meter...')
@@ -219,10 +196,61 @@ if interpMissing:
     all_data = myutils.replace_nan(all_data, nan_cols, 'interp')
     print('Done!')
 
-print('Aligning timestamps..')
-# Align timestamp offset
-all_data = myutils.align_timestamp(all_data, offset)
-print('Done!')
+if dataset == 'train':
+    if useSite0:
+        print('Loading site_0 leaked data...')
+        site_0 = pd.read_feather('./data/data_leak_site0.feather')
+        site_0['meter_reading'] = site_0['meter_reading_scraped']
+        site_0.drop(['meter_reading_original','meter_reading_scraped'], axis=1, inplace=True)
+        site_0.dropna(inplace=True)
+        site_0.loc[site_0['meter_reading'] < 0, 'meter_reading'] = 0
+        site_0 = site_0[(site_0['timestamp'].dt.year == 2016)]
+        
+        print('Replacing original data with leaked data...')
+        all_data = myutils.replace_with_leaked(all_data, site_0)
+        print('Done!')
+        del site_0
+    
+    if useSite1:
+        print('Loading site_1 leaked data...')
+        site_1 = np.load('./data/data_leak_site1.pkl', allow_pickle=True)
+        site_1['meter_reading'] = site_1['meter_reading_scraped']
+        site_1.drop(['meter_reading_scraped'], axis=1, inplace=True)
+        site_1.dropna(inplace=True)
+        site_1.loc[site_1['meter_reading'] < 0, 'meter_reading'] = 0
+        site_1 = site_1[(site_1['timestamp'].dt.year == 2016)]
+        
+        print('Replacing original data with leaked data...')
+        all_data = myutils.replace_with_leaked(all_data, site_1)
+        print('Done!')
+        del site_1
+        
+    if useSite2:
+        print('Loading site_2 leaked data...')
+        site_2 = pd.read_feather('./data/data_leak_site2.feather')
+        site_2.dropna(inplace=True)
+        site_2.loc[site_2['meter_reading'] < 0, 'meter_reading'] = 0
+        site_2 = site_2[(site_2['timestamp'].dt.year == 2016)]
+        
+        print('Replacing original data with leaked data...')
+        all_data = myutils.replace_with_leaked(all_data, site_2)
+        print('Done!')
+        del site_2
+        
+    if useSite4:
+        print('Loading site_4 leaked data...')
+        site_4 = pd.read_feather('./data/data_leak_site4.feather')
+        site_4['meter_reading'] = site_4['meter_reading_scraped']
+        site_4['meter'] = 0
+        site_4.drop(['meter_reading_scraped'], axis=1, inplace=True)
+        site_4.dropna(inplace=True)
+        site_4.loc[site_4['meter_reading'] < 0, 'meter_reading'] = 0
+        site_4 = site_4[(site_4['timestamp'].dt.year == 2016)]
+        
+        print('Replacing original data with leaked data...')
+        all_data = myutils.replace_with_leaked(all_data, site_4)
+        print('Done!')
+        del site_4
 
 print('Saving data to feather...')
 if dataset == 'train':
