@@ -1,0 +1,6 @@
+TO DO:
+- test filling NaNs with 0 in cloud coverage
+- code time series CV
+- include site 15 leak ok
+- include leak data from 2017 and 2018 into training data
+

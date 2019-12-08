@@ -13,19 +13,17 @@ plt.close('all')
 import myutils
 
 train = pd.read_feather('./data/train.feather')
-site0 = pd.read_feather('/home/diogo/competitions/great-energy-predictor/data/data_leak_site0.feather')
-site1 = np.load('/home/diogo/competitions/great-energy-predictor/data/data_leak_site1.pkl', allow_pickle=True)
-site2 = pd.read_feather('/home/diogo/competitions/great-energy-predictor/data/data_leak_site2.feather')
-site4 = pd.read_feather('/home/diogo/competitions/great-energy-predictor/data/data_leak_site4.feather')
 
 # plot control
 plot_site0 = False
 plot_site1 = False
 plot_site2 = False
-plot_site4 = True
+plot_site4 = False
+plot_site15 = True
 
 if plot_site0:
     print('Loading site_0 leaked data...')
+    site0 = pd.read_feather('/home/diogo/competitions/great-energy-predictor/data/data_leak_site0.feather')
     site0['meter_reading'] = site0['meter_reading_scraped']
     site0.drop(['meter_reading_scraped'], axis=1, inplace=True)
     site0.dropna(inplace=True)
@@ -57,6 +55,7 @@ if plot_site0:
 
 if plot_site1:
     print('Loading site_1 leaked data...')
+    site1 = pd.read_feather('/home/diogo/competitions/great-energy-predictor/data/data_leak_site1.feather')
     site1['meter_reading'] = site1['meter_reading_scraped']
     site1.drop(['meter_reading_scraped'], axis=1, inplace=True)
     site1.dropna(inplace=True)
@@ -88,6 +87,7 @@ if plot_site1:
 
 if plot_site2:
     print('Loading site_2 leaked data...')
+    site2 = pd.read_feather('/home/diogo/competitions/great-energy-predictor/data/data_leak_site2.feather')
     site2.dropna(inplace=True)
     site2.loc[site2['meter_reading'] < 0, 'meter_reading'] = 0
     site2 = site2[(site2['timestamp'].dt.year == 2016)]
@@ -117,6 +117,7 @@ if plot_site2:
 
 if plot_site4:
     print('Loading site_4 leaked data...')
+    site4 = pd.read_feather('/home/diogo/competitions/great-energy-predictor/data/data_leak_site4.feather')
     site4['meter_reading'] = site4['meter_reading_scraped']
     site4['meter'] = 0
     site4.drop(['meter_reading_scraped'], axis=1, inplace=True)
@@ -139,6 +140,36 @@ if plot_site4:
         leak_plt = site4.loc[(site4['building_id'] == bid) & 
                                (site4['timestamp'].dt.month == month_plt) &
                                (site4['timestamp'].dt.year == year_plt), ['timestamp', 'meter_reading']]
+        train_rplc_plt = train_rplc.loc[(train_rplc['building_id'] == bid) & 
+                                       (train_rplc['timestamp'].dt.month == month_plt) &
+                                       (train_rplc['timestamp'].dt.year == year_plt), ['timestamp', 'meter_reading']]
+        plt.plot(train_plt['timestamp'], train_plt['meter_reading'], label='train')    
+        plt.plot(leak_plt['timestamp'], leak_plt['meter_reading'], '.', label='leak')
+        plt.plot(train_rplc_plt['timestamp'], train_rplc_plt['meter_reading'], 'o', label='train with replaced leak data')
+        plt.legend()
+        
+if plot_site15:
+    print('Loading site_15 leaked data...')
+    site15 = pd.read_feather('/home/diogo/competitions/great-energy-predictor/data/data_leak_site15.feather')
+    site15.dropna(inplace=True)
+    site15.loc[site15['meter_reading'] < 0, 'meter_reading'] = 0
+    site15 = site15[(site15['timestamp'].dt.year == 2017)]
+    
+    print('Replacing original data with leaked data...')
+    train_rplc = myutils.replace_with_leaked(train, site15)
+    print('Done!')
+    
+    # site15 plot
+    month_plt = 9
+    year_plt = 2017
+    for bid in site15['building_id'].sample(3):
+        plt.figure()
+        train_plt = train.loc[(train['building_id'] == bid) & 
+                              (train['timestamp'].dt.month == month_plt) & 
+                              (train['timestamp'].dt.year == year_plt), ['timestamp', 'meter_reading']]
+        leak_plt = site15.loc[(site15['building_id'] == bid) & 
+                               (site15['timestamp'].dt.month == month_plt) &
+                               (site15['timestamp'].dt.year == year_plt), ['timestamp', 'meter_reading']]
         train_rplc_plt = train_rplc.loc[(train_rplc['building_id'] == bid) & 
                                        (train_rplc['timestamp'].dt.month == month_plt) &
                                        (train_rplc['timestamp'].dt.year == year_plt), ['timestamp', 'meter_reading']]

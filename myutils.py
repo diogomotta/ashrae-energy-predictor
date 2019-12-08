@@ -21,6 +21,7 @@ https://www.kaggle.com/kyakovlev/ashrae-data-minification
 https://www.kaggle.com/kyakovlev/ashrae-baseline-lgbm
 https://www.kaggle.com/c/ashrae-energy-prediction/discussion/116773
 https://www.kaggle.com/rohanrao/ashrae-divide-and-conquer
+https://www.kaggle.com/purist1024/ashrae-simple-data-cleanup-lb-1-08-no-leaks
 '''
 
 ## Function to reduce the memory usage
@@ -84,11 +85,15 @@ def calculate_time_offset(df_weather):
     return offset
     
 
-def align_timestamp(df, offset):
-    df['offset'] = df.site_id.map(offset)
-    df['timestamp_aligned'] = (df.timestamp - pd.to_timedelta(df.offset, unit='H'))
-    df['timestamp'] = df['timestamp_aligned']
-    del df['offset'], df['timestamp_aligned']
+def align_timestamp(df, offset, strategy='14h_calc', site_id=None, tz=None):
+    if strategy == '14h_calc':
+        df['offset'] = df['site_id'].map(offset)
+        df['timestamp_aligned'] = (df['timestamp'] - pd.to_timedelta(df['offset'], unit='H'))
+        df['timestamp'] = df['timestamp_aligned']
+        del df['timestamp_aligned'], df['offset']
+    elif strategy == 'timezone':
+        df.loc[df['site_id']==site_id, 'timestamp'] = df['timestamp'].dt.tz_localize('utc').dt.tz_convert(tz).dt.tz_localize(None)
+        
     return df
 
 def preprocess_datetime(df, date_feat=['h', 'd', 'w', 'm', 'wk']):
@@ -216,32 +221,33 @@ def calculate_relative_humidity(weather_df):
     
     return weather_df
 
-def create_lag_features(df, cols, window):
+def create_lag_features(df, cols, group, window, calc):
     """
     Creating lag-based features looking back in time.
     """
     
-    df_site = df.groupby("site_id")
+    grouped = df.groupby(group)
     
-    df_rolled = df_site[cols].rolling(window=window, min_periods=0)
+    rolled = grouped[cols].rolling(window=window, min_periods=0)
     
-    df_mean = df_rolled.mean().reset_index().astype(np.float16)
-    df_median = df_rolled.median().reset_index().astype(np.float16)
-    df_min = df_rolled.min().reset_index().astype(np.float16)
-    df_max = df_rolled.max().reset_index().astype(np.float16)
-    df_std = df_rolled.std().reset_index().astype(np.float16)
+    if calc == 'mean':
+        df_calc = rolled.mean().reset_index().astype(np.float32)
+    elif calc == 'median':
+        df_calc = rolled.median().reset_index().astype(np.float32)
+    elif calc == 'min':
+        df_calc = rolled.min().reset_index().astype(np.float32)
+    elif calc == 'max':
+        df_calc = rolled.max().reset_index().astype(np.float32)
+    elif calc == 'std':
+        df_calc = rolled.std().reset_index().astype(np.float32)
     
     for col in cols:
-        df['{:}_mean_lag{:d}'.format(col, window)] = df_mean[col]
-        df['{:}_median_lag{:d}'] = df_median[col]
-        df['{:}_min_lag{:d}'] = df_min[col]
-        df['{:}_max_lag{:d}'] = df_max[col]
-        df['{:}_std_lag{:d}'] = df_std[col]
+        label = '{:}_{:}_lag{:d}'.format(col, calc, window)
+        df[label] = df_calc[col] 
         
     return df
 
 def find_missing_dates(weather_df):
-    
     # Find Missing Dates
     time_format = "%Y-%m-%d %H:%M:%S"
     start_date = weather_df['timestamp'].min()
@@ -261,10 +267,93 @@ def find_missing_dates(weather_df):
     return weather_df
 
 def replace_with_leaked(original, leaked):
-    t = original[['building_id', 'meter', 'timestamp']]
-    t['row_id'] = t.index
-    leaked = leaked.merge(t, left_on = ['building_id', 'meter', 'timestamp'], right_on = ['building_id', 'meter', 'timestamp'], how = "left")
-    leaked = leaked[['meter_reading', 'row_id']].set_index('row_id').dropna()
-    original.loc[leaked.index, 'meter_reading'] = leaked['meter_reading']
+    merged = original.merge(leaked, on=['building_id', 'meter', 'timestamp'], how='left')
+    merged['meter_reading'] = 0
+    leaked_ok_len = len(merged.loc[merged['meter_reading_y'].isnull()==False, 'meter_reading_y'])
+    print('Replacing {:d} rows with leaked data'.format(leaked_ok_len))
+    merged.loc[merged['meter_reading_y'].isnull()==False, 'meter_reading'] = merged.loc[merged['meter_reading_y'].isnull()==False, 'meter_reading_y']
+    original_len = len(merged.loc[merged['meter_reading_y'].isnull()==True, 'meter_reading_x'])
+    print('Keeping {:d} rows with original data'.format(original_len))
+    merged.loc[merged['meter_reading_y'].isnull()==True, 'meter_reading'] = merged.loc[merged['meter_reading_y'].isnull()==True, 'meter_reading_x']
+    merged.drop(columns=['meter_reading_x', 'meter_reading_y'], inplace=True)
     
-    return original
+    return merged
+
+def make_is_bad_zero(df, min_interval=48, summer_start=6, summer_end=8):
+    """Helper routine for 'find_bad_zeros'.
+    
+    This operates upon a single dataframe produced by 'groupby'. We expect an 
+    additional column 'meter_id' which is a duplicate of 'meter' because groupby 
+    eliminates the original one."""
+    meter = df['meter_id'].iloc[0]
+    is_zero = df['meter_reading'] == 0
+    if meter == 0:
+        # Electrical meters should never be zero. Keep all zero-readings in this table so that
+        # they will all be dropped in the train set.
+        return is_zero
+
+    transitions = (is_zero != is_zero.shift(1))
+    all_sequence_ids = transitions.cumsum()
+    ids = all_sequence_ids[is_zero].rename("ids")
+    if meter in [2, 3]:
+        # It's normal for steam and hotwater to be turned off during the summer
+        keep = set(ids[(df['timestamp'].dt.month <= summer_start) |
+                       (df['timestamp'].dt.month >= summer_end)].unique())
+        is_bad = ids.isin(keep) & (ids.map(ids.value_counts()) >= min_interval)
+    elif meter == 1:
+        time_ids = ids.to_frame().join(df['timestamp']).set_index("timestamp").ids
+        is_bad = ids.map(ids.value_counts()) >= min_interval
+
+        # Cold water may be turned off during the winter
+        jan_id = time_ids.get(0, False)
+        dec_id = time_ids.get(8283, False)
+        if (jan_id and dec_id and jan_id == time_ids.get(500, False) and
+                dec_id == time_ids.get(8783, False)):
+            is_bad = is_bad & (~(ids.isin(set([jan_id, dec_id]))))
+    else:
+        raise Exception(f"Unexpected meter type: {meter}")
+
+    result = is_zero.copy()
+    result.update(is_bad)
+    return result
+
+def find_bad_zeros(X, y):
+    """Returns an Index object containing only the rows which should be deleted."""
+    Xy = X.assign(meter_reading=y, meter_id=X.meter)
+    is_bad_zero = Xy.groupby(["building_id", "meter"]).apply(make_is_bad_zero)
+    return is_bad_zero[is_bad_zero].index.droplevel([0, 1])
+
+def find_bad_rows(X, y):
+    return find_bad_zeros(X, y)
+
+def calculate_gradient(w0, h, y_pred, y_leak):
+    
+    # Calculate current function value
+    X_comb = np.array([w * y for w, y in zip(w0, y_pred)]) / np.sum(w0) # normalized X vector
+    f_comb = np.sqrt(mean_squared_error(np.log1p(X_comb), np.log1p(y_leak)))
+    
+    # Calculate the partial derivatives
+    grad = list()
+    for i in range(0, len(w0)):
+        w1 = w0
+        w1[i] += h
+        y_comb_ = np.array([w * y for w, y in zip(w1, y_pred)]) / np.sum(w1)
+        f_comb_ = np.sqrt(mean_squared_error(np.log1p(y_comb_), np.log1p(y_leak)))
+        grad.append( (f_comb_ - f_comb) / h)
+        
+    return np.asarray(grad)
+        
+def gradient_descent(w0, y_pred, y_leak, gamma, max_iters, precision):
+    w_next = w0
+    
+    for _i in range(max_iters):
+        w_curr = w_next
+        w_next = w_curr - gamma * calculate_gradient(w0, 1e-4, y_pred, y_leak)
+
+        step = w_next - w_curr
+        if abs(step) <= precision:
+            break
+
+    print('Minimum at ', w_next)
+        
+    

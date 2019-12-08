@@ -23,12 +23,17 @@ encodeCyclic = False
 interpMissing = False
 removeOutliers = True
 addLag = False
+cleanBadRows = True
+cleanBadRows_meters123 = False
 
 # Leaked data
-useSite0 = True
-useSite1 = False
-useSite2 = False
-useSite4 = False
+useMyLeak = False
+useKaggleLeak = True
+if useMyLeak:
+    useSite0 = True
+    useSite1 = True
+    useSite2 = True
+    useSite4 = True
 
 print('Loading data...')
 if dataset == 'train':
@@ -41,11 +46,107 @@ weather_train = pd.read_feather('./data/weather_train.feather')
 weather_test = pd.read_feather('./data/weather_test.feather')
 print('Done!')
 
+if useMyLeak:
+    if useSite0:
+        print('Loading site_0 leaked data...')
+        site_0 = pd.read_feather('./data/data_leak_site0.feather')
+        site_0['meter_reading'] = site_0['meter_reading_scraped']
+        site_0.drop(['meter_reading_original','meter_reading_scraped'], axis=1, inplace=True)
+        site_0.dropna(inplace=True)
+        site_0.loc[site_0['meter_reading'] < 0, 'meter_reading'] = 0
+        site_0 = site_0[(site_0['timestamp'].dt.year == 2016)]
+        
+        print('Replacing original data with leaked data...')
+        meter_train = myutils.replace_with_leaked(meter_train, site_0)
+        print('Done!')
+        del site_0
+    
+    if useSite1:
+        print('Loading site_1 leaked data...')
+        site_1 = np.load('./data/data_leak_site1.pkl', allow_pickle=True)
+        site_1['meter_reading'] = site_1['meter_reading_scraped']
+        site_1.drop(['meter_reading_scraped'], axis=1, inplace=True)
+        site_1.dropna(inplace=True)
+        site_1.loc[site_1['meter_reading'] < 0, 'meter_reading'] = 0
+        site_1 = site_1[(site_1['timestamp'].dt.year == 2016)]
+        
+        print('Replacing original data with leaked data...')
+        meter_train = myutils.replace_with_leaked(meter_train, site_1)
+        print('Done!')
+        del site_1
+        
+    if useSite2:
+        print('Loading site_2 leaked data...')
+        site_2 = pd.read_feather('./data/data_leak_site2.feather')
+        site_2.dropna(inplace=True)
+        site_2.loc[site_2['meter_reading'] < 0, 'meter_reading'] = 0
+        site_2 = site_2[(site_2['timestamp'].dt.year == 2016)]
+        
+        print('Replacing original data with leaked data...')
+        meter_train = myutils.replace_with_leaked(meter_train, site_2)
+        print('Done!')
+        del site_2
+        
+    if useSite4:
+        print('Loading site_4 leaked data...')
+        site_4 = pd.read_feather('./data/data_leak_site4.feather')
+        site_4['meter_reading'] = site_4['meter_reading_scraped']
+        site_4['meter'] = 0
+        site_4.drop(['meter_reading_scraped'], axis=1, inplace=True)
+        site_4.dropna(inplace=True)
+        site_4.loc[site_4['meter_reading'] < 0, 'meter_reading'] = 0
+        site_4 = site_4[(site_4['timestamp'].dt.year == 2016)]
+        
+        print('Replacing original data with leaked data...')
+        meter_train = myutils.replace_with_leaked(meter_train, site_4)
+        print('Done!')
+        del site_4
+elif useKaggleLeak:
+    leak = pd.read_feather('./data/kaggle_leak.feather')
+    leak.fillna(0, inplace=True)
+    leak = leak[(leak['timestamp'].dt.year == 2016)]
+    leak.loc[leak['meter_reading'] < 0, 'meter_reading'] = 0 # remove large negative values
+    leak = leak[leak['building_id'] != 245]
+#    # remove buildings from site 0
+#    bid_site0 = building.loc[building['site_id']==0, 'building_id']
+#    leak = leak.loc[~leak['building_id'].isin(bid_site0), 0]
+    print('Replacing original data with leaked data...')
+    meter_train = myutils.replace_with_leaked(meter_train, leak)
+    print('Done!')
+    
+    print('Including data from 2017 and 2018...')
+    leak = pd.read_feather('./data/kaggle_leak.feather')
+    leak.fillna(0, inplace=True)
+    leak = leak[(leak['timestamp'].dt.year > 2016)]
+    meter_train = meter_train.append(leak, ignore_index=True, sort=True)
+    
+    del leak
+    gc.collect()
+
 # Removing bad data in Site 0
 # https://www.kaggle.com/c/ashrae-energy-prediction/discussion/113054#656588
 print('Removing bad data from site 0...')
 meter_train = meter_train.loc[(meter_train['building_id'] > 104) | (meter_train['timestamp'] > '2016-05-20'), :]
 print('Done!')
+
+print('Converting meter 0 data in site 0 from kBTU to kWh...')
+rows_idx = meter_train.loc[meter_train['meter']==0, :].index
+meter_train.loc[rows_idx, 'meter_reading'] = meter_train.loc[rows_idx, 'meter_reading'] * 0.2931
+print('Done!')
+
+#print('Converting meter 1 data in site 0 from kBTU to kWh...')
+#rows_idx = meter_train.loc[meter_train['meter']==1, :].index
+#meter_train.loc[rows_idx, 'meter_reading'] = meter_train.loc[rows_idx, 'meter_reading'] * 0.2931
+#print('Done!')
+    
+if cleanBadRows:
+    # Remove bad rows using code from
+    # https://www.kaggle.com/purist1024/ashrae-simple-data-cleanup-lb-1-08-no-leaks
+    print('Removing null meter 0 readings...')
+    bad_rows = meter_train.loc[(meter_train['meter_reading']==0) &
+                               (meter_train['meter']==0), :].index
+    meter_train = meter_train.drop(index=bad_rows)
+    print('Done!')
 
 # Removing bad data in building 1099 on meter 2 (steam)
 print('Removing bad data from building 1099...')
@@ -65,7 +166,7 @@ if dataset == 'train':
     meter_data = meter_train
     del meter_train
     
-print('Calculating median reading for each building...')
+print('Calculating mean and std building reading per meter...')
 if dataset == 'test':
     meter_train_group = meter_train.groupby(['building_id', 'meter'])['meter_reading']
     del meter_train
@@ -73,7 +174,10 @@ else:
     meter_train_group = meter_data.groupby(['building_id', 'meter'])['meter_reading']
 
 building_median = np.log1p(meter_train_group.median()).astype(np.float32)
+building_mean = np.log1p(meter_train_group.mean()).astype(np.float32)
+building_std = np.log1p(meter_train_group.std()).astype(np.float32)
 del meter_train_group
+gc.collect()
 print('Done!')
 
 print('Encoding building metadata and merging to meter data...')
@@ -113,19 +217,8 @@ if dataset == 'train':
 elif dataset == 'test':
     weather = weather_test
     del weather_test
-
-if alignTimestamps:
-    print('Aligning weather timestamps..')
-    # Align timestamp offset
-    ## Using actual timezones from leaked data
-    #timezones = ['US/Eastern', 'Europe/London', 'US/Mountain', 'US/Pacific']
-    #site_ids_leak = [0, 1, 2, 4]
-    #for sid, tz in zip(site_ids_leak, timezones):
-    #    all_data = myutils.align_timestamp(all_data, 0, strategy='timezone', site_id=sid, tz=tz)
     
-    # Using 14h calculation
-    weather = myutils.align_timestamp(weather, offset, strategy='14h_calc')
-    print('Done!')
+gc.collect()
 
 print('Adding new features to weather dataframe')
 # Find missing dates
@@ -145,8 +238,7 @@ weather = myutils.replace_nan(weather, nan_cols, 'mean_group', group=['site_id',
 
 # Replace remaining NaNs with daily mean value
 nan_cols = weather.loc[:, weather.isnull().any()].columns
-
-weather = myutils.replace_nan(weather, nan_cols, 'median')
+weather = myutils.replace_nan(weather, nan_cols, 'mean')
 
 # Add relative humidity and feels like temperature
 weather = myutils.calculate_relative_humidity(weather)
@@ -157,6 +249,12 @@ if addLag:
     weather = myutils.create_lag_features(weather, lag_cols, 'site_id', 72, 'mean')
 print('Done!')
 
+if alignTimestamps:
+    print('Aligning weather timestamps..')  
+    # Using 14h calculation
+    weather = myutils.align_timestamp(weather, offset, strategy='14h_calc')
+    print('Done!')
+
 print('Saving data to feather...')
 if dataset == 'train':
     weather.to_feather('./data/weather_train_feats.feather')
@@ -166,6 +264,7 @@ print('Done!')
   
 print('Merging weather and meter dataframes...')
 # Merge weather data
+all_data = myutils.reduce_mem_usage(weather)
 all_data = meter_data.merge(weather, on=['site_id', 'timestamp'], how='left')
 all_data = myutils.reduce_mem_usage(all_data)
 del weather, meter_data
@@ -185,8 +284,10 @@ all_data['age'] = all_data['age'].fillna(-99).astype(np.int16)
 all_data['year_built'] = all_data['year_built'].fillna(-99).astype(np.int16)
 print('Done!')
 
-print('Adding median building reading per meter...')
+print('Adding mean and std building reading per meter...')
 all_data['building_median'] = all_data[['building_id', 'meter']].merge(building_median, on=['building_id', 'meter'], how='left')['meter_reading']
+all_data['building_mean'] = all_data[['building_id', 'meter']].merge(building_mean, on=['building_id', 'meter'], how='left')['meter_reading']
+all_data['building_std'] = all_data[['building_id', 'meter']].merge(building_std, on=['building_id', 'meter'], how='left')['meter_reading']
 print('Done!')
 
 if interpMissing:
@@ -195,62 +296,24 @@ if interpMissing:
     nan_cols = all_data.loc[:, all_data.isnull().any()].columns
     all_data = myutils.replace_nan(all_data, nan_cols, 'interp')
     print('Done!')
-
-if dataset == 'train':
-    if useSite0:
-        print('Loading site_0 leaked data...')
-        site_0 = pd.read_feather('./data/data_leak_site0.feather')
-        site_0['meter_reading'] = site_0['meter_reading_scraped']
-        site_0.drop(['meter_reading_original','meter_reading_scraped'], axis=1, inplace=True)
-        site_0.dropna(inplace=True)
-        site_0.loc[site_0['meter_reading'] < 0, 'meter_reading'] = 0
-        site_0 = site_0[(site_0['timestamp'].dt.year == 2016)]
-        
-        print('Replacing original data with leaked data...')
-        all_data = myutils.replace_with_leaked(all_data, site_0)
-        print('Done!')
-        del site_0
     
-    if useSite1:
-        print('Loading site_1 leaked data...')
-        site_1 = np.load('./data/data_leak_site1.pkl', allow_pickle=True)
-        site_1['meter_reading'] = site_1['meter_reading_scraped']
-        site_1.drop(['meter_reading_scraped'], axis=1, inplace=True)
-        site_1.dropna(inplace=True)
-        site_1.loc[site_1['meter_reading'] < 0, 'meter_reading'] = 0
-        site_1 = site_1[(site_1['timestamp'].dt.year == 2016)]
-        
-        print('Replacing original data with leaked data...')
-        all_data = myutils.replace_with_leaked(all_data, site_1)
-        print('Done!')
-        del site_1
-        
-    if useSite2:
-        print('Loading site_2 leaked data...')
-        site_2 = pd.read_feather('./data/data_leak_site2.feather')
-        site_2.dropna(inplace=True)
-        site_2.loc[site_2['meter_reading'] < 0, 'meter_reading'] = 0
-        site_2 = site_2[(site_2['timestamp'].dt.year == 2016)]
-        
-        print('Replacing original data with leaked data...')
-        all_data = myutils.replace_with_leaked(all_data, site_2)
-        print('Done!')
-        del site_2
-        
-    if useSite4:
-        print('Loading site_4 leaked data...')
-        site_4 = pd.read_feather('./data/data_leak_site4.feather')
-        site_4['meter_reading'] = site_4['meter_reading_scraped']
-        site_4['meter'] = 0
-        site_4.drop(['meter_reading_scraped'], axis=1, inplace=True)
-        site_4.dropna(inplace=True)
-        site_4.loc[site_4['meter_reading'] < 0, 'meter_reading'] = 0
-        site_4 = site_4[(site_4['timestamp'].dt.year == 2016)]
-        
-        print('Replacing original data with leaked data...')
-        all_data = myutils.replace_with_leaked(all_data, site_4)
-        print('Done!')
-        del site_4
+if cleanBadRows_meters123:
+    print('Removing null meter 1 readings when temperatures are higher than 10C...')
+    bad_rows = all_data.loc[(all_data['meter_reading']==0) &
+                            (all_data['meter']==1) & 
+                            (all_data['air_temperature'] > 10), :].index
+    print('Dropping {:d} rows...'.format(bad_rows))
+    all_data = all_data.drop(index=bad_rows)
+    print('Done!')
+    
+    print('Removing null meter 2 and 3 readings when temperatures are lower than than 25C...')
+    bad_rows = all_data.loc[(all_data['meter_reading']==0) &
+                            ((all_data['meter']==2) |
+                             (all_data['meter']==3)) & 
+                            (all_data['air_temperature'] < 25), :].index
+    print('Dropping {:d} rows...'.format(bad_rows))
+    all_data = all_data.drop(index=bad_rows)
+    print('Done!')
 
 print('Saving data to feather...')
 if dataset == 'train':
