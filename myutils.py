@@ -11,6 +11,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import datetime
 from sklearn.metrics import mean_squared_error
+import copy
 
 ''' Kernels
 https://www.kaggle.com/corochann/ashrae-training-lgbm-by-meter-type
@@ -327,19 +328,23 @@ def find_bad_rows(X, y):
     return find_bad_zeros(X, y)
 
 def calculate_gradient(w0, h, y_pred, y_leak):
-    
-    # Calculate current function value
-    X_comb = np.array([w * y for w, y in zip(w0, y_pred)]) / np.sum(w0) # normalized X vector
-    f_comb = np.sqrt(mean_squared_error(np.log1p(X_comb), np.log1p(y_leak)))
-    
+    w0 = np.asarray(w0)
+
     # Calculate the partial derivatives
     grad = list()
     for i in range(0, len(w0)):
-        w1 = w0
+        w1 = copy.copy(w0)
+        w2 = copy.copy(w0)
         w1[i] += h
-        y_comb_ = np.array([w * y for w, y in zip(w1, y_pred)]) / np.sum(w1)
-        f_comb_ = np.sqrt(mean_squared_error(np.log1p(y_comb_), np.log1p(y_leak)))
-        grad.append( (f_comb_ - f_comb) / h)
+        w2[i] -= h
+        y_comb_ph = np.sum([w * y for w, y in zip(w1, y_pred)], axis=0) / np.sum(w1)
+        y_comb_ph = np.clip(y_comb_ph, a_min=0, a_max=None)
+        f_comb_ph = np.sqrt(mean_squared_error(np.log1p(y_comb_ph), np.log1p(y_leak)))
+        y_comb_mh = np.sum([w * y for w, y in zip(w2, y_pred)], axis=0) / np.sum(w2)
+        y_comb_mh = np.clip(y_comb_mh, a_min=0, a_max=None)
+        f_comb_mh = np.sqrt(mean_squared_error(np.log1p(y_comb_mh), np.log1p(y_leak)))
+        grad.append( (f_comb_ph - f_comb_mh) / (2 * h) )
+    print('Calculated gradient: ({:})'.format(grad))
         
     return np.asarray(grad)
         
@@ -347,13 +352,53 @@ def gradient_descent(w0, y_pred, y_leak, gamma, max_iters, precision):
     w_next = w0
     
     for _i in range(max_iters):
-        w_curr = w_next
-        w_next = w_curr - gamma * calculate_gradient(w0, 1e-4, y_pred, y_leak)
+        w_curr = np.asarray(w_next)
+        # Current score
+        y_comb = np.sum([w * y for w, y in zip(w_curr, y_pred)], axis=0) / np.sum(w_curr)
+        y_comb = np.clip(y_comb, a_min=0, a_max=None)
+        score_curr = np.sqrt(mean_squared_error(np.log1p(y_comb), np.log1p(y_leak)))
+        
+        w_next = np.asarray(w_curr - gamma * calculate_gradient(w_curr, 1e-6, y_pred, y_leak))
+        w_next /= np.sum(w_next)
+        print('gradient descending weights')
+        print(w_next)
+        
+        # Current score
+        y_comb = np.sum([w * y for w, y in zip(w_next, y_pred)], axis=0) / np.sum(w_next)
+        y_comb = np.clip(y_comb, a_min=0, a_max=None)
+        score_next = np.sqrt(mean_squared_error(np.log1p(y_comb), np.log1p(y_leak)))
+        print('Leak validation score: {:.6f}'.format(score_curr))
 
-        step = w_next - w_curr
+        step = np.sqrt( (score_curr - score_next) ** 2) 
+        print('Step: {:.3e}'.format(step))
         if abs(step) <= precision:
             break
 
     print('Minimum at ', w_next)
+    return w_next, score_curr
         
+def remove_sequential_zero_rows(df, time_window='72h', low_temp_thresh=None, high_temp_thresh=None):
+    df_bid = df.groupby(['building_id'])
     
+    bad_idx = list()
+    for key in df_bid.groups.keys():
+        idx = df_bid.groups[key]
+        df_temp = df.loc[idx, :]
+        df_temp['index'] = df_temp.index
+        if low_temp_thresh is not None:
+            df_temp = df_temp.loc[df_temp['air_temperature'] > low_temp_thresh, :]
+        if high_temp_thresh is not None:
+            df_temp = df_temp.loc[df_temp['air_temperature'] < high_temp_thresh, :]
+        df_temp = df_temp.sort_values(by=['timestamp'])
+        df_temp = df_temp.set_index('timestamp')
+        df_roll = df_temp.rolling(time_window).sum()
+        bad_rows = df_temp.loc[df_roll['meter_reading']==0, 'index'].values
+        bad_idx += list(bad_rows)
+        # print('Building {:d} has {:d} bad rows'.format(key, len(bad_rows)))
+        
+    return bad_idx
+        
+        
+        
+        
+        
